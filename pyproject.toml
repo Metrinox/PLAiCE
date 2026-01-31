@@ -1,0 +1,7 @@
+[project]
+name = "plaice"
+version = "0.0.1"
+requires-python = ">=3.8"
+
+[tool.pytest]
+addopts = "-q"
