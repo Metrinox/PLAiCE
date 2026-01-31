@@ -1,7 +1,8 @@
 from PIL import Image
 from typing import Tuple
 
-rgb = Tuple[int, int, int]
+RGB = Tuple[int, int, int]
+Pos = Tuple[int, int]
 
 class Canvas:
     def __init__(self, x, y):
@@ -13,9 +14,9 @@ class Canvas:
         self.pixels = [[(0, 0, 0) for _ in range(x)] for _ in range(y)]
 
 
-    def write(self, x, y, col: rgb):
+    def write(self, x, y, col: RGB):
         self.pixels[y][x] = col
-
+        
     def export(self):
         height = len(self.pixels)
         width = len(self.pixels[0])
@@ -25,6 +26,6 @@ class Canvas:
         print("image created")
 
 
-canvas = Canvas(100, 100)
-canvas.write(50, 50, (255, 255, 255))
-canvas.export()
+canvas = Canvas(5, 5)
+canvas.write(3, 3, (255, 255, 255))
+canvas.export() 
