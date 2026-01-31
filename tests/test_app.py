@@ -18,6 +18,25 @@ class AppSmokeTest(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_navigation_between_pages(self):
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            app = App(title="NavTest")
+            app.build_ui(root)
+            # initial page should be 'main'
+            self.assertEqual(app.current_page, "main")
+
+            # navigate to second page
+            app.show_frame("second")
+            self.assertEqual(app.current_page, "second")
+
+            # go back
+            app.show_frame("main")
+            self.assertEqual(app.current_page, "main")
+        finally:
+            root.destroy()
+
 
 if __name__ == "__main__":
     unittest.main()
