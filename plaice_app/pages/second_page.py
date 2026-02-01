@@ -14,13 +14,13 @@ import os
 # Hard-coded images folder (project root / assets / images)
 IMAGE_DIR = Path(__file__).resolve().parents[2] / "frames"
 # milliseconds between frames (default)
-FRAME_DELAY_MS = 1000
+FRAME_DELAY_MS = 500
 # bounds for delay when speeding up / slowing down
 MIN_DELAY_MS = 10
 MAX_DELAY_MS = 1000
 
 
-def _load_image(path: Path):
+def _load_image(path: Path, max_w: int, max_h: int):
     """Try to load an image and return a Tk-compatible PhotoImage.
 
     Prefer Pillow (ImageTk) for broad format support, but fall back to
@@ -36,7 +36,8 @@ def _load_image(path: Path):
     try:
         if Image and ImageTk:
             im = Image.open(path)
-            # optionally resize here
+            if max_w > 0 and max_h > 0:
+                im.thumbnail((max_w, max_h), Image.LANCZOS)
             photo = ImageTk.PhotoImage(im)
 
             # try to extract a textual description from EXIF or info
@@ -141,6 +142,12 @@ def create_second_page(master: tk.Misc, on_back: Callable[[], None]) -> tk.Frame
     speed_down_btn = tk.Button(ctrl_frame, text="Speed -", command=slow_down)
     speed_down_btn.pack(side=tk.LEFT, padx=(4, 0))
 
+    # fit images to screen with a small margin
+    screen_w = frame.winfo_screenwidth()
+    screen_h = frame.winfo_screenheight()
+    max_w = max(0, screen_w - 80)
+    max_h = max(0, screen_h - 220)
+
     # load image paths
     paths = []
     if IMAGE_DIR.exists() and IMAGE_DIR.is_dir():
@@ -151,7 +158,7 @@ def create_second_page(master: tk.Misc, on_back: Callable[[], None]) -> tk.Frame
 
     images = []
     for p in paths:
-        res = _load_image(p)
+        res = _load_image(p, max_w, max_h)
         if res is not None:
             images.append(res)  # (photo, description)
 
@@ -174,7 +181,7 @@ def create_second_page(master: tk.Misc, on_back: Callable[[], None]) -> tk.Frame
     frame._delay_ms = FRAME_DELAY_MS
 
     # description label
-    desc_label = tk.Label(frame, text="", wraplength=380, justify=tk.CENTER)
+    desc_label = tk.Label(frame, text="", wraplength=max(200, max_w), justify=tk.CENTER)
     desc_label.pack(pady=(6, 0))
 
     def _show_index(i: int):
