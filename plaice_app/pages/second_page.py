@@ -13,8 +13,11 @@ import os
 
 # Hard-coded images folder (project root / assets / images)
 IMAGE_DIR = Path(__file__).resolve().parents[2] / "frames"
-# milliseconds between frames
+# milliseconds between frames (default)
 FRAME_DELAY_MS = 1000
+# bounds for delay when speeding up / slowing down
+MIN_DELAY_MS = 10
+MAX_DELAY_MS = 1000
 
 
 def _load_image(path: Path):
@@ -112,6 +115,32 @@ def create_second_page(master: tk.Misc, on_back: Callable[[], None]) -> tk.Frame
     play_pause_btn = tk.Button(ctrl_frame, textvariable=play_pause_var, command=toggle_play)
     play_pause_btn.pack(side=tk.LEFT, padx=(8, 0))
 
+    # speed controls
+    def _apply_new_delay():
+        # if playing, reschedule next with new delay
+        if getattr(frame, "_after_id", None):
+            try:
+                frame.after_cancel(frame._after_id)
+            except Exception:
+                pass
+            frame._after_id = frame.after(frame._delay_ms, _schedule_next)
+
+    def speed_up():
+        # make it faster -> decrease delay
+        frame._delay_ms = max(MIN_DELAY_MS, int(frame._delay_ms * 0.7))
+        _apply_new_delay()
+
+    def slow_down():
+        # make it slower -> increase delay
+        frame._delay_ms = min(MAX_DELAY_MS, int(frame._delay_ms * 1.5))
+        _apply_new_delay()
+
+    speed_up_btn = tk.Button(ctrl_frame, text="Speed +", command=speed_up)
+    speed_up_btn.pack(side=tk.LEFT, padx=(8, 0))
+
+    speed_down_btn = tk.Button(ctrl_frame, text="Speed -", command=slow_down)
+    speed_down_btn.pack(side=tk.LEFT, padx=(4, 0))
+
     # load image paths
     paths = []
     if IMAGE_DIR.exists() and IMAGE_DIR.is_dir():
@@ -141,6 +170,8 @@ def create_second_page(master: tk.Misc, on_back: Callable[[], None]) -> tk.Frame
     frame._idx = 0
     frame._playing = True
     frame._after_id = None
+    # current delay (ms) between frames
+    frame._delay_ms = FRAME_DELAY_MS
 
     # description label
     desc_label = tk.Label(frame, text="", wraplength=380, justify=tk.CENTER)
@@ -157,10 +188,10 @@ def create_second_page(master: tk.Misc, on_back: Callable[[], None]) -> tk.Frame
             return
         frame._idx = (frame._idx + 1) % len(frame._images)
         _show_index(frame._idx)
-        frame._after_id = frame.after(FRAME_DELAY_MS, _schedule_next)
+        frame._after_id = frame.after(frame._delay_ms, _schedule_next)
 
     # show first image immediately
     _show_index(0)
-    frame._after_id = frame.after(FRAME_DELAY_MS, _schedule_next)
+    frame._after_id = frame.after(frame._delay_ms, _schedule_next)
 
     return frame
