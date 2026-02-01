@@ -1,7 +1,8 @@
 from PIL import Image
 from typing import Tuple
 
-rgb = Tuple[int, int, int]
+RGB = Tuple[int, int, int]
+Pos = Tuple[int, int]
 
 class Canvas:
     def __init__(self, x, y):
@@ -31,7 +32,7 @@ class Canvas:
         self.age += 1
         return result
 
-    def write(self, x, y, col: rgb):
+    def write(self, x, y, col: RGB):
         self.pixels[y][x] = col
         self.age += 1
 
