@@ -41,6 +41,10 @@ def test_diffusion_pipeline():
     assert image.size == (128, 128), f"Expected (128, 128), got {image.size}"
     assert image.mode == "RGB", f"Expected RGB, got {image.mode}"
 
+    # Save for inspection
+    image.save("test_diffusion_output.png")
+    print(f"  Saved to: test_diffusion_output.png")
+
     print("  ✓ Test passed!\n")
     return image
 
@@ -96,6 +100,11 @@ def test_local_region_pipeline():
 
     assert isinstance(proposals, list), "Should return a list of proposals"
     assert len(proposals) > 0, "Should generate at least one proposal"
+
+    # Save the generated image for inspection
+    gen_img = pipeline.process_prompt_to_image(prompt)
+    gen_img.save("test_endtoend_output.png")
+    print(f"  Saved generated image to: test_endtoend_output.png")
 
     print("  ✓ Test passed!\n")
 
