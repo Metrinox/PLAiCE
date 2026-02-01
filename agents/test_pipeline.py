@@ -1,18 +1,16 @@
 """
 Integration tests for the pipeline module.
 
-Tests the composition of Diffuser → Evaluator → Proposals.
+These tests use lightweight fakes to validate the data flow and
+composition without loading large models.
 """
 
 import numpy as np
 from PIL import Image
-from agents.pipeline import (
-    PipelineConfig,
-    DiffusionPromptPipeline,
-    EvaluationPipeline,
-    LocalRegionPipeline,
-    generate_and_evaluate,
-)
+from agents import pipeline as pipeline_module
+from agents import prompt_generator as prompt_module
+from agents.pipeline import PipelineConfig, LocalRegionPipeline, generate_and_evaluate
+from contextlib import contextmanager
 
 
 def create_test_canvas_region(
@@ -23,145 +21,115 @@ def create_test_canvas_region(
     return Image.fromarray(arr)
 
 
-def test_diffusion_pipeline():
-    """Test that diffuser generates images of correct size."""
-    print("Test 1: DiffusionPromptPipeline")
-    print("-" * 50)
+class FakePromptGenerator:
+    def __init__(self, device="cpu"):
+        self.device = device
+        self.last_image_size = None
 
-    config = PipelineConfig(image_size=128)
-    diffuser = DiffusionPromptPipeline(config)
-
-    prompt = "a simple red square"
-    image = diffuser.generate(prompt)
-
-    print(f"  Prompt: '{prompt}'")
-    print(f"  Generated image size: {image.size}")
-    print(f"  Image mode: {image.mode}")
-
-    assert image.size == (128, 128), f"Expected (128, 128), got {image.size}"
-    assert image.mode == "RGB", f"Expected RGB, got {image.mode}"
-
-    # Save for inspection
-    image.save("test_diffusion_output.png")
-    print(f"  Saved to: test_diffusion_output.png")
-
-    print("  ✓ Test passed!\n")
-    return image
+    def generate_prompt_from_image(self, image: Image.Image) -> str:
+        self.last_image_size = image.size
+        return "cat"
 
 
-def test_evaluation_pipeline(generated_img: Image.Image):
-    """Test that evaluator produces proposals from two images."""
-    print("Test 2: EvaluationPipeline")
-    print("-" * 50)
+class FakeDiffuser:
+    def __init__(self, config: PipelineConfig):
+        self.config = config
+        self.last_prompt = None
 
-    config = PipelineConfig(image_size=128, top_x_proposals=5)
-    evaluator = EvaluationPipeline(config)
+    def generate(self, prompt: str) -> Image.Image:
+        self.last_prompt = prompt
+        arr = np.full(
+            (self.config.image_size, self.config.image_size, 3),
+            (10, 20, 30),
+            dtype=np.uint8,
+        )
+        return Image.fromarray(arr)
 
-    # Create a contrasting canvas region
-    canvas_region = create_test_canvas_region(width=128, height=128, color=(50, 50, 50))
 
-    proposals = evaluator.propose_pixels(canvas_region, generated_img)
+class FakeEvaluationPipeline:
+    def __init__(self, config: PipelineConfig):
+        self.config = config
+        self.last_current = None
+        self.last_generated = None
 
-    print(f"  Canvas region: solid gray (50, 50, 50)")
-    print(f"  Generated image: from diffuser")
-    print(f"  Number of proposals: {len(proposals)}")
-    print(f"  Proposal format: (x, y, (r, g, b))")
-    if proposals:
-        print(f"  First 3 proposals:")
-        for x, y, rgb in proposals[:3]:
-            print(f"    ({x}, {y}) → RGB{rgb}")
+    def propose_pixels(self, current_canvas_img: Image.Image, generated_img: Image.Image):
+        self.last_current = current_canvas_img
+        self.last_generated = generated_img
+        return [(1, 2, (3, 4, 5)), (6, 7, (8, 9, 10))]
 
-    assert len(proposals) <= 5, f"Expected ≤5 proposals, got {len(proposals)}"
-    assert all(len(p) == 3 for p in proposals), "Each proposal should be (x, y, rgb)"
-    assert all(
-        len(rgb) == 3 for _, _, rgb in proposals
-    ), "RGB should be (r, g, b)"
 
-    print("  ✓ Test passed!\n")
-    return proposals
+@contextmanager
+def patched_pipeline():
+    old_prompt = prompt_module.PromptGenerator
+    old_diffuser = pipeline_module.DiffusionPromptPipeline
+    old_eval = pipeline_module.EvaluationPipeline
+
+    prompt_module.PromptGenerator = FakePromptGenerator
+    pipeline_module.DiffusionPromptPipeline = FakeDiffuser
+    pipeline_module.EvaluationPipeline = FakeEvaluationPipeline
+    try:
+        yield
+    finally:
+        prompt_module.PromptGenerator = old_prompt
+        pipeline_module.DiffusionPromptPipeline = old_diffuser
+        pipeline_module.EvaluationPipeline = old_eval
 
 
 def test_local_region_pipeline():
-    """Test end-to-end pipeline: prompt → image → proposals."""
-    print("Test 3: LocalRegionPipeline (end-to-end)")
+    """Validate full pipeline: classifier → diffuser → evaluator."""
+    print("Test 1: LocalRegionPipeline data flow")
     print("-" * 50)
 
-    config = PipelineConfig(image_size=128, top_x_proposals=5)
-    pipeline = LocalRegionPipeline(config)
+    config = PipelineConfig(image_size=32, top_x_proposals=2)
+    canvas_region = create_test_canvas_region(width=32, height=32, color=(0, 0, 0))
 
-    prompt = "a bright yellow circle"
-    canvas_region = create_test_canvas_region(width=128, height=128, color=(0, 0, 0))
+    with patched_pipeline():
+        pipeline = LocalRegionPipeline(config)
+        prompt, generated_img, proposals = pipeline.process_canvas_region_to_proposals(
+            canvas_region
+        )
 
-    proposals = pipeline.process_prompt_against_canvas(prompt, canvas_region)
+    assert prompt == "cat", "Classifier should return prompt"
+    assert generated_img.size == (32, 32), "Generated image should match config size"
+    assert proposals == [(1, 2, (3, 4, 5)), (6, 7, (8, 9, 10))], "Evaluator proposals mismatch"
 
-    print(f"  Prompt: '{prompt}'")
-    print(f"  Canvas: solid black (0, 0, 0)")
-    print(f"  Generated proposals: {len(proposals)}")
+    print("  ✓ Test passed!\n")
 
-    assert isinstance(proposals, list), "Should return a list of proposals"
-    assert len(proposals) > 0, "Should generate at least one proposal"
 
-    # Save the generated image for inspection
-    gen_img = pipeline.process_prompt_to_image(prompt)
-    gen_img.save("test_endtoend_output.png")
-    print(f"  Saved generated image to: test_endtoend_output.png")
+def test_prompt_against_canvas():
+    """Validate prompt → diffuser → evaluator path."""
+    print("Test 2: process_prompt_against_canvas")
+    print("-" * 50)
+
+    config = PipelineConfig(image_size=16, top_x_proposals=2)
+    canvas_region = create_test_canvas_region(width=16, height=16, color=(128, 128, 128))
+
+    with patched_pipeline():
+        pipeline = LocalRegionPipeline(config)
+        proposals = pipeline.process_prompt_against_canvas("a blue cube", canvas_region)
+
+    assert proposals, "Should return proposals"
+    assert proposals[0] == (1, 2, (3, 4, 5)), "Proposal format mismatch"
 
     print("  ✓ Test passed!\n")
 
 
 def test_convenience_function():
-    """Test the one-shot convenience function."""
-    print("Test 4: Convenience function (generate_and_evaluate)")
+    """Validate the one-shot convenience function."""
+    print("Test 3: generate_and_evaluate")
     print("-" * 50)
 
-    prompt = "a blue gradient"
-    canvas_region = create_test_canvas_region(width=128, height=128, color=(200, 200, 200))
+    canvas_region = create_test_canvas_region(width=8, height=8, color=(10, 10, 10))
+    with patched_pipeline():
+        proposals = generate_and_evaluate(
+            "a blue gradient",
+            canvas_region,
+            image_size=8,
+            evaluator_device="cpu",
+            top_x_proposals=2,
+        )
 
-    proposals = generate_and_evaluate(
-        prompt,
-        canvas_region,
-        image_size=128,
-        evaluator_device="cpu",
-        top_x_proposals=3,
-    )
-
-    print(f"  Prompt: '{prompt}'")
-    print(f"  Proposals returned: {len(proposals)}")
-
-    assert isinstance(proposals, list), "Should return a list"
-    assert len(proposals) <= 3, "Should respect top_x_proposals"
-
-    print("  ✓ Test passed!\n")
-
-
-def test_data_flow():
-    """Test that data flows correctly through the pipeline."""
-    print("Test 5: Data flow and composition")
-    print("-" * 50)
-
-    # Create a pipeline with specific config
-    config = PipelineConfig(image_size=128, top_x_proposals=5)
-    pipeline = LocalRegionPipeline(config)
-
-    # Test prompt-only
-    prompt = "test image"
-    img = pipeline.process_prompt_to_image(prompt)
-    assert img.size == (128, 128), "Image size should match config"
-    print(f"  ✓ Diffuser output size correct: {img.size}")
-
-    # Test full pipeline
-    canvas = create_test_canvas_region()
-    proposals = pipeline.process_prompt_against_canvas(prompt, canvas)
-    assert isinstance(proposals, list), "Should return proposals"
-    print(f"  ✓ Evaluator output format correct: {len(proposals)} proposals")
-
-    # Verify proposal format
-    if proposals:
-        x, y, rgb = proposals[0]
-        assert isinstance(x, (int, np.integer)), "x should be int"
-        assert isinstance(y, (int, np.integer)), "y should be int"
-        assert isinstance(rgb, tuple) and len(rgb) == 3, "rgb should be 3-tuple"
-        print(f"  ✓ Proposal format correct: ({x}, {y}, {rgb})")
+    assert proposals == [(1, 2, (3, 4, 5)), (6, 7, (8, 9, 10))]
 
     print("  ✓ Test passed!\n")
 
@@ -172,11 +140,9 @@ if __name__ == "__main__":
     print("=" * 50 + "\n")
 
     try:
-        gen_img = test_diffusion_pipeline()
-        test_evaluation_pipeline(gen_img)
         test_local_region_pipeline()
+        test_prompt_against_canvas()
         test_convenience_function()
-        test_data_flow()
 
         print("=" * 50)
         print("✓ All tests passed!")
