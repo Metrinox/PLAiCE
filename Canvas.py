@@ -42,3 +42,6 @@ class Canvas:
         img.putdata([pixel for row in self.pixels for pixel in row])
         img.save("output.png")
         print("image created")
+
+    def getAge(self):
+        return self.age

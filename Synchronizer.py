@@ -127,6 +127,9 @@ class Synchronizer:
             thread.start()
 
         while self.running:
+            if self.canvas.getAge() >= 100:
+                self.running = False
+                break
             with self.proposal_lock:
                 batch = self.proposals.copy()
                 proposals = []
