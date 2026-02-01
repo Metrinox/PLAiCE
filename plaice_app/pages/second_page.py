@@ -12,7 +12,7 @@ import os
 
 
 # Hard-coded images folder (project root / assets / images)
-IMAGE_DIR = Path(__file__).resolve().parents[2] / "assets" / "images"
+IMAGE_DIR = Path(__file__).resolve().parents[2] / "frames"
 # milliseconds between frames
 FRAME_DELAY_MS = 1000
 
@@ -34,10 +34,41 @@ def _load_image(path: Path):
         if Image and ImageTk:
             im = Image.open(path)
             # optionally resize here
-            return ImageTk.PhotoImage(im)
+            photo = ImageTk.PhotoImage(im)
+
+            # try to extract a textual description from EXIF or info
+            desc = None
+            try:
+                info = im.info or {}
+                # common info fields
+                for key in ("Description", "description", "comment", "Comment"):
+                    if key in info:
+                        desc = info.get(key)
+                        break
+
+                if not desc:
+                    # EXIF ImageDescription tag is 270
+                    try:
+                        exif = im.getexif()
+                        if exif:
+                            val = exif.get(270)
+                            if val:
+                                desc = val
+                    except Exception:
+                        pass
+
+                if isinstance(desc, bytes):
+                    try:
+                        desc = desc.decode("utf-8", errors="ignore")
+                    except Exception:
+                        desc = str(desc)
+            except Exception:
+                desc = None
+
+            return (photo, desc)
         else:
             # tkinter.PhotoImage supports PNG/GIF on most builds
-            return tk.PhotoImage(file=str(path))
+            return (tk.PhotoImage(file=str(path)), None)
     except Exception:
         return None
 
@@ -91,9 +122,9 @@ def create_second_page(master: tk.Misc, on_back: Callable[[], None]) -> tk.Frame
 
     images = []
     for p in paths:
-        img = _load_image(p)
-        if img is not None:
-            images.append(img)
+        res = _load_image(p)
+        if res is not None:
+            images.append(res)  # (photo, description)
 
     if not images:
         note = tk.Label(frame, text=f"No images found in {IMAGE_DIR}")
@@ -105,15 +136,21 @@ def create_second_page(master: tk.Misc, on_back: Callable[[], None]) -> tk.Frame
         return frame
 
     # keep references on the frame to avoid GC
+    # images: list[tuple[PhotoImage, Optional[str]]]
     frame._images = images
     frame._idx = 0
     frame._playing = True
     frame._after_id = None
 
+    # description label
+    desc_label = tk.Label(frame, text="", wraplength=380, justify=tk.CENTER)
+    desc_label.pack(pady=(6, 0))
+
     def _show_index(i: int):
-        img = frame._images[i]
-        img_holder.configure(image=img)
-        img_holder.image = img
+        photo, desc = frame._images[i]
+        img_holder.configure(image=photo)
+        img_holder.image = photo
+        desc_label.configure(text=desc or "")
 
     def _schedule_next():
         if not getattr(frame, "_playing", False):
