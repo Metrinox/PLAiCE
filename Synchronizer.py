@@ -149,8 +149,7 @@ class Synchronizer:
             thread.start()
 
         while self.running:
-            print("hi")
-            if self.canvas.getAge() >= 200:
+            if self.canvas.getAge() >= 512:
                 print("[run] age limit reached, stopping")
                 self.running = False
                 break
