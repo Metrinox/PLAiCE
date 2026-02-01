@@ -12,9 +12,12 @@ import os
 
 
 # Hard-coded images folder (project root / assets / images)
-IMAGE_DIR = Path(__file__).resolve().parents[2] / "assets" / "images"
-# milliseconds between frames
+IMAGE_DIR = Path(__file__).resolve().parents[2] / "frames"
+# milliseconds between frames (default)
 FRAME_DELAY_MS = 1000
+# bounds for delay when speeding up / slowing down
+MIN_DELAY_MS = 10
+MAX_DELAY_MS = 1000
 
 
 def _load_image(path: Path):
@@ -34,10 +37,41 @@ def _load_image(path: Path):
         if Image and ImageTk:
             im = Image.open(path)
             # optionally resize here
-            return ImageTk.PhotoImage(im)
+            photo = ImageTk.PhotoImage(im)
+
+            # try to extract a textual description from EXIF or info
+            desc = None
+            try:
+                info = im.info or {}
+                # common info fields
+                for key in ("Description", "description", "comment", "Comment"):
+                    if key in info:
+                        desc = info.get(key)
+                        break
+
+                if not desc:
+                    # EXIF ImageDescription tag is 270
+                    try:
+                        exif = im.getexif()
+                        if exif:
+                            val = exif.get(270)
+                            if val:
+                                desc = val
+                    except Exception:
+                        pass
+
+                if isinstance(desc, bytes):
+                    try:
+                        desc = desc.decode("utf-8", errors="ignore")
+                    except Exception:
+                        desc = str(desc)
+            except Exception:
+                desc = None
+
+            return (photo, desc)
         else:
             # tkinter.PhotoImage supports PNG/GIF on most builds
-            return tk.PhotoImage(file=str(path))
+            return (tk.PhotoImage(file=str(path)), None)
     except Exception:
         return None
 
@@ -81,6 +115,32 @@ def create_second_page(master: tk.Misc, on_back: Callable[[], None]) -> tk.Frame
     play_pause_btn = tk.Button(ctrl_frame, textvariable=play_pause_var, command=toggle_play)
     play_pause_btn.pack(side=tk.LEFT, padx=(8, 0))
 
+    # speed controls
+    def _apply_new_delay():
+        # if playing, reschedule next with new delay
+        if getattr(frame, "_after_id", None):
+            try:
+                frame.after_cancel(frame._after_id)
+            except Exception:
+                pass
+            frame._after_id = frame.after(frame._delay_ms, _schedule_next)
+
+    def speed_up():
+        # make it faster -> decrease delay
+        frame._delay_ms = max(MIN_DELAY_MS, int(frame._delay_ms * 0.7))
+        _apply_new_delay()
+
+    def slow_down():
+        # make it slower -> increase delay
+        frame._delay_ms = min(MAX_DELAY_MS, int(frame._delay_ms * 1.5))
+        _apply_new_delay()
+
+    speed_up_btn = tk.Button(ctrl_frame, text="Speed +", command=speed_up)
+    speed_up_btn.pack(side=tk.LEFT, padx=(8, 0))
+
+    speed_down_btn = tk.Button(ctrl_frame, text="Speed -", command=slow_down)
+    speed_down_btn.pack(side=tk.LEFT, padx=(4, 0))
+
     # load image paths
     paths = []
     if IMAGE_DIR.exists() and IMAGE_DIR.is_dir():
@@ -91,9 +151,9 @@ def create_second_page(master: tk.Misc, on_back: Callable[[], None]) -> tk.Frame
 
     images = []
     for p in paths:
-        img = _load_image(p)
-        if img is not None:
-            images.append(img)
+        res = _load_image(p)
+        if res is not None:
+            images.append(res)  # (photo, description)
 
     if not images:
         note = tk.Label(frame, text=f"No images found in {IMAGE_DIR}")
@@ -105,25 +165,33 @@ def create_second_page(master: tk.Misc, on_back: Callable[[], None]) -> tk.Frame
         return frame
 
     # keep references on the frame to avoid GC
+    # images: list[tuple[PhotoImage, Optional[str]]]
     frame._images = images
     frame._idx = 0
     frame._playing = True
     frame._after_id = None
+    # current delay (ms) between frames
+    frame._delay_ms = FRAME_DELAY_MS
+
+    # description label
+    desc_label = tk.Label(frame, text="", wraplength=380, justify=tk.CENTER)
+    desc_label.pack(pady=(6, 0))
 
     def _show_index(i: int):
-        img = frame._images[i]
-        img_holder.configure(image=img)
-        img_holder.image = img
+        photo, desc = frame._images[i]
+        img_holder.configure(image=photo)
+        img_holder.image = photo
+        desc_label.configure(text=desc or "")
 
     def _schedule_next():
         if not getattr(frame, "_playing", False):
             return
         frame._idx = (frame._idx + 1) % len(frame._images)
         _show_index(frame._idx)
-        frame._after_id = frame.after(FRAME_DELAY_MS, _schedule_next)
+        frame._after_id = frame.after(frame._delay_ms, _schedule_next)
 
     # show first image immediately
     _show_index(0)
-    frame._after_id = frame.after(FRAME_DELAY_MS, _schedule_next)
+    frame._after_id = frame.after(frame._delay_ms, _schedule_next)
 
     return frame
