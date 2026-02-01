@@ -19,6 +19,10 @@ def patch_to_pixel_coords(
 
 
 def extract_pixel_color(image: np.ndarray, x: int, y: int) -> rgb:
+    h, w = image.shape[:2]
+    # Clamp coordinates to image bounds
+    x = max(0, min(w - 1, x))
+    y = max(0, min(h - 1, y))
     r, g, b = image[y, x]
     return int(r), int(g), int(b)
 
