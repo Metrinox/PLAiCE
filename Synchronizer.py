@@ -1,6 +1,8 @@
 import Canvas
 import threading
 import math
+import time
+import os
 from typing import List, Dict
 
 class Synchronizer:
@@ -9,17 +11,21 @@ class Synchronizer:
         self.canvas = canvas
         self.proposals = [] # queue of proposals from the agents
         self.proposal_lock = threading.Lock()
+        self.proposal_cv = threading.Condition(self.proposal_lock)
         self.threads = [] # proposal_threads
         self.agents = [] # agent objects
         self.numAgents = numAgents
         self.run_thread = None
         self.running = False
         self.agent_bounds = {}
+        self.verbose = False
+        self.batch_index = 0
 
     def initialize_agents(self):
         from agents.agent import Agent
         from agents.agent_state import AgentState
         from agents.model_interface import AgentModel
+        from agents.pipeline import PipelineConfig
         import random
 
         self.agents = []
@@ -28,14 +34,15 @@ class Synchronizer:
         for i in range(self.numAgents):
             state = AgentState(
                 agent_id=i,
-                fov_radius=3,
                 temperature=0.5,
                 bias_contrast=random.uniform(0.0, 1.0),
                 bias_smoothness=random.uniform(0.0, 1.0),
                 bias_edge=random.uniform(0.0, 1.0),
+                verbose=self.verbose,
             )
             model = AgentModel()
-            self.agents.append(Agent(state, model))
+            pipeline_config = PipelineConfig(image_size=64)
+            self.agents.append(Agent(state, model, pipeline_config=pipeline_config))
             self.threads.append(None)
 
 
@@ -72,33 +79,48 @@ class Synchronizer:
         return (x0, x1, y0, y1)
 
     def worker(self, agent, bounds):
-        import numpy as np
         import random
         import time
 
         x0, x1, y0, y1 = bounds
 
-        while True:
-            height = len(self.canvas.pixels)
-            width = len(self.canvas.pixels[0]) if height > 0 else 0
-            if width == 0 or height == 0:
+        while self.running:
+            try:
+                height = len(self.canvas.pixels)
+                width = len(self.canvas.pixels[0]) if height > 0 else 0
+                if width == 0 or height == 0:
+                    time.sleep(0.01)
+                    continue
+                if x1 <= x0 or y1 <= y0:
+                    time.sleep(0.01)
+                    continue
+
+                x = random.randrange(x0, x1)
+                y = random.randrange(y0, y1)
+
+                canvas_version = self.canvas.age
+
+                fov = self.canvas.read(x0, y0, x1 - x0, y1 - y0)
+                proposals = agent.step(fov, (x0, y0), canvas_version)
+                if proposals:
+                    with self.proposal_cv:
+                        self.proposals.extend(proposals)
+                        self.proposal_cv.notify()
+                else:
+                    if self.verbose:
+                        now = time.time()
+                        last = getattr(agent, "_last_empty_log", 0.0)
+                        if now - last >= 1.0:
+                            print(
+                                f"[worker {agent.state.agent_id}] zero proposals; "
+                                f"fov={len(fov)}x{len(fov[0]) if fov else 0}"
+                            )
+                            agent._last_empty_log = now
+
                 time.sleep(0.01)
-                continue
-            if x1 <= x0 or y1 <= y0:
-                time.sleep(0.01)
-                continue
-
-            x = random.randrange(x0, x1)
-            y = random.randrange(y0, y1)
-
-            canvas_snapshot = np.array(self.canvas.pixels, dtype=np.uint8)
-            canvas_version = self.canvas.age
-
-            proposal = agent.step(canvas_snapshot, (x, y), canvas_version)
-            with self.proposal_lock:
-                self.proposals.append(proposal)
-
-            time.sleep(0.01)
+            except Exception as exc:
+                print(f"[worker {agent.state.agent_id}] exception: {exc}")
+                time.sleep(0.1)
 
     def start(self):
         if self.numAgents <= 0:
@@ -110,29 +132,36 @@ class Synchronizer:
         rows = math.ceil(self.numAgents / cols)
 
         for i in range(self.numAgents):
-            bounds = self._compute_slice_bounds(i, cols, rows, overlap_ratio=0.6)
+            bounds = self._compute_slice_bounds(i, cols, rows, overlap_ratio=0.4)
             self.agent_bounds[i] = bounds
+            self.agents[i].state.slice_bounds = bounds
             self.threads[i] = threading.Thread(
                 target=self.worker,
                 args=(self.agents[i], bounds),
             )
 
     def run(self):
-        if self.running:
-            return
-        self.running = True
-
+        print("[run] started")
+        frames_dir = "frames"
+        os.makedirs(frames_dir, exist_ok=True)
         # start spinning agents
         for thread in self.threads:
             thread.start()
 
         while self.running:
-            if self.canvas.getAge() >= 100:
+            print("hi")
+            if self.canvas.getAge() >= 200:
+                print("[run] age limit reached, stopping")
                 self.running = False
                 break
-            with self.proposal_lock:
+            with self.proposal_cv:
+                if not self.proposals:
+                    self.proposal_cv.wait(timeout=2)
+
                 batch = self.proposals.copy()
-                proposals = []
+                self.proposals.clear()
+            if batch:
+                print(f"[run] batch size: {len(batch)}")
             # Dict[Pos, Dict[rgb, int]]
             modified_pixels = dict()
 
@@ -140,31 +169,47 @@ class Synchronizer:
 
             for p in batch:
                 weight: int = p.canvas_version
-                modified_pixels[p.region_id][p.rgb] = weight
+                if p.region_id not in modified_pixels:
+                    modified_pixels[p.region_id] = {}
+                modified_pixels[p.region_id][p.rgb] = (
+                    modified_pixels[p.region_id].get(p.rgb, 0) + weight
+                )
             for pos, m in modified_pixels.items():
                 x, y = pos
                 tempR, tempG, tempB = 0, 0, 0
                 sumWeights = 0
                 for rgb, weight in m.items():
                     r, g, b = rgb
-                    tempR += r * (weight / cur_age)
-                    tempG += g * (weight / cur_age)
-                    tempB += b * (weight / cur_age)
+                    tempR += r * weight 
+                    tempG += g * weight
+                    tempB += b * weight 
 
-                    sumWeights += (weight / cur_age)
+                    sumWeights += weight
+                if sumWeights == 0:
+                    continue
                 resultR = tempR / sumWeights
                 resultG = tempG / sumWeights
                 resultB = tempB / sumWeights
 
-                self.canvas.write(x, y, (resultR, resultG, resultB))
+                self.canvas.write(
+                    x,
+                    y,
+                    (int(resultR), int(resultG), int(resultB)),
+                )
+            self.canvas.increment_age()
+            frame_path = os.path.join(frames_dir, f"frame_{self.canvas.age:04d}.png")
+            self.canvas.export(frame_path)
+
 
         # stop spinning agents
         for thread in self.threads:
             thread.join()
+        print("[run] stopped")
 
     def start_run(self):
         if self.run_thread is not None and self.run_thread.is_alive():
             return
+        self.running = True
         self.run_thread = threading.Thread(target=self.run)
         self.run_thread.start()
 

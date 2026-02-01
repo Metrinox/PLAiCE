@@ -11,6 +11,7 @@ class Agent:
         self.pipeline_config = pipeline_config or PipelineConfig()
         self.prompt_generator = PromptGenerator(device=self.pipeline_config.evaluator_device)
         self.diffuser = DiffusionPromptPipeline(self.pipeline_config)
+        self._logged_sizes = False
 
     def _classify(self, fov_image: Image.Image) -> str:
         if self.state.last_guess is not None:
@@ -60,12 +61,31 @@ class Agent:
         fov_np = np.array(fov, dtype=np.uint8)
         fov_image = Image.fromarray(fov_np, mode="RGB")
 
+        if self.state.verbose:
+            print(f"[worker {self.state.agent_id}] before classifier")
         label = self._classify(fov_image)
 
+        if self.state.verbose:
+            print(f"[worker {self.state.agent_id}] before diffuser: label={label}")
         generated = self.diffuser.generate(label)
+        if self.state.verbose:
+            print(f"[worker {self.state.agent_id}] before resize")
         generated = generated.resize(fov_image.size, resample=Image.LANCZOS).convert("RGB")
 
         self.state.last_guess = generated
+        if not self._logged_sizes and self.state.verbose:
+            print(
+                f"[worker {self.state.agent_id}] fov={fov_image.size}, "
+                f"generated={generated.size}"
+            )
+            self._logged_sizes = True
 
+        if self.state.verbose:
+            print(f"[worker {self.state.agent_id}] before eval")
         gen_np = np.array(generated, dtype=np.uint8)
-        return self._diff_to_proposals(fov_np, gen_np, fov_origin, canvas_version)
+        proposals = self._diff_to_proposals(fov_np, gen_np, fov_origin, canvas_version)
+        if self.state.verbose:
+            print(f"[worker {self.state.agent_id}] after eval")
+        if self.state.verbose:
+            print(f"[worker {self.state.agent_id}] proposals={len(proposals)}")
+        return proposals

@@ -1,5 +1,6 @@
 from PIL import Image
 from typing import Tuple
+import random
 
 RGB = Tuple[int, int, int]
 Pos = Tuple[int, int]
@@ -11,7 +12,13 @@ class Canvas:
         # |
         # v
         # + y
-        self.pixels = [[(0, 0, 0) for _ in range(x)] for _ in range(y)]
+        self.pixels = [
+            [
+                (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+                for _ in range(x)
+            ]
+            for _ in range(y)
+        ]
         self.age = 0
 
     def read(self, startX, startY, width, height):
@@ -34,15 +41,18 @@ class Canvas:
 
     def write(self, x, y, col: RGB):
         self.pixels[y][x] = col
-        self.age += 1
 
-    def export(self):
+    def export(self, path="output.png"):
         height = len(self.pixels)
         width = len(self.pixels[0])
+        print(f"canvas age: {self.age}")
         img = Image.new("RGB", (width, height))
         img.putdata([pixel for row in self.pixels for pixel in row])
-        img.save("output.png")
-        print("image created")
+        img.save(path)
+        print(f"image created: {path}")
 
     def getAge(self):
         return self.age
+
+    def increment_age(self):
+        self.age += 1

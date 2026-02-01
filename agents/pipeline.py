@@ -52,24 +52,49 @@ class DiffusionPromptPipeline:
     def __init__(self, config: PipelineConfig):
         """Initialize diffuser (lazy-load on first call)."""
         self.config = config
-        self._diffuser = None
+        # Shared global diffuser to avoid loading weights per agent.
+        if not hasattr(DiffusionPromptPipeline, "_shared_diffuser"):
+            DiffusionPromptPipeline._shared_diffuser = None
+        if not hasattr(DiffusionPromptPipeline, "_shared_lock"):
+            import threading
+            DiffusionPromptPipeline._shared_lock = threading.Lock()
 
     def _get_diffuser(self):
         """Lazy-load diffuser on first use."""
-        if self._diffuser is None:
-            from diffusers import DiffusionPipeline
+        if DiffusionPromptPipeline._shared_diffuser is not None:
+            return DiffusionPromptPipeline._shared_diffuser
+
+        with DiffusionPromptPipeline._shared_lock:
+            if DiffusionPromptPipeline._shared_diffuser is not None:
+                return DiffusionPromptPipeline._shared_diffuser
+
+            from diffusers.pipelines.amused import AmusedPipeline
             import torch
 
             device = self.config.diffuser_device or self._auto_device()
             dtype = torch.bfloat16 if "cuda" in device else torch.float32
+            device_map = "balanced" if "cuda" in device else None
 
-            self._diffuser = DiffusionPipeline.from_pretrained(
+            shared = AmusedPipeline.from_pretrained(
                 "amused/amused-256",
                 torch_dtype=dtype,
-                device_map=device,
+                device_map=device_map,
             )
+            # Log where the pipeline parameters live (cpu/cuda).
+            try:
+                param_device = None
+                for _, module in shared.components.items():
+                    if hasattr(module, "parameters"):
+                        params = list(module.parameters())
+                        if params:
+                            param_device = params[0].device
+                            break
+                print(f"[diffuser] device_map={device_map or 'none'}, param_device={param_device}")
+            except Exception as exc:
+                print(f"[diffuser] device check failed: {exc}")
 
-        return self._diffuser
+            DiffusionPromptPipeline._shared_diffuser = shared
+        return DiffusionPromptPipeline._shared_diffuser
 
     @staticmethod
     def _auto_device():
@@ -99,8 +124,12 @@ class DiffusionPromptPipeline:
             PIL.Image of size (image_size, image_size) in RGB mode
         """
         diffuser = self._get_diffuser()
-        result = diffuser(prompt)
-        image = result.images[0]
+        try:
+            result = diffuser(prompt)
+            image = result.images[0]
+        except Exception as exc:
+            print(f"[diffuser] error during generate: {exc}")
+            raise
 
         # Ensure fixed size and RGB
         image = image.resize(
