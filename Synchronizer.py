@@ -135,10 +135,14 @@ class Synchronizer:
             bounds = self._compute_slice_bounds(i, cols, rows, overlap_ratio=0.4)
             self.agent_bounds[i] = bounds
             self.agents[i].state.slice_bounds = bounds
-            self.threads[i] = threading.Thread(
+            t = threading.Thread(
                 target=self.worker,
                 args=(self.agents[i], bounds),
             )
+            # Make worker threads daemon so they don't keep the process alive
+            # if the main thread exits unexpectedly.
+            t.daemon = True
+            self.threads[i] = t
 
     def run(self):
         print("[run] started")
@@ -234,12 +238,87 @@ class Synchronizer:
             return
         self.running = True
         self.run_thread = threading.Thread(target=self.run)
+        # Make the run thread daemon as well so it won't block process exit.
+        self.run_thread.daemon = True
         self.run_thread.start()
+        # Start an internal parent-watcher so that if the parent process
+        # disappears, the synchronizer will stop. This is defensive in case
+        # the Synchronizer is used outside of PLAiCE.py.
+        try:
+            self._start_parent_watcher()
+        except Exception:
+            # Best effort; do not raise on watcher failure.
+            pass
+
+    def _start_parent_watcher(self, interval: float = 1.0):
+        try:
+            import psutil
+        except Exception:
+            psutil = None
+
+        def _watcher():
+            parent_pid = os.getppid()
+            while self.running:
+                try:
+                    if psutil is not None:
+                        try:
+                            ps = psutil.Process(parent_pid)
+                            if not ps.is_running() or ps.status() == psutil.STATUS_ZOMBIE:
+                                print("[synchronizer.parent_watcher] parent not running, stopping")
+                                self.stop_run()
+                                break
+                        except psutil.NoSuchProcess:
+                            print("[synchronizer.parent_watcher] parent disappeared, stopping")
+                            self.stop_run()
+                            break
+                    else:
+                        cur_ppid = os.getppid()
+                        if cur_ppid == 1 or cur_ppid == 0 or cur_ppid != parent_pid:
+                            print(f"[synchronizer.parent_watcher] parent pid changed ({parent_pid} -> {cur_ppid}), stopping")
+                            self.stop_run()
+                            break
+                except Exception as exc:
+                    print(f"[synchronizer.parent_watcher] exception: {exc}")
+                time.sleep(interval)
+
+        t = threading.Thread(target=_watcher, daemon=True)
+        t.start()
 
     def stop_run(self):
+        """
+        Stop the run loop. This is safe to call from a signal handler: it will
+        set the running flag to False and attempt a short, non-blocking join
+        on the run thread so the signal handler doesn't block indefinitely.
+        For a full blocking shutdown, call `shutdown()` instead.
+        """
         self.running = False
         if self.run_thread is not None:
-            self.run_thread.join()
+            try:
+                # Attempt a short join so we don't block forever in a signal handler
+                self.run_thread.join(timeout=2.0)
+            except Exception:
+                # Best-effort; do not raise from signal handler
+                pass
+
+    def shutdown(self, timeout: float = 10.0):
+        """
+        Perform a graceful shutdown, blocking until threads exit or timeout.
+        Call this from main application teardown when blocking is acceptable.
+        """
+        self.running = False
+        if self.run_thread is not None:
+            try:
+                self.run_thread.join(timeout=timeout)
+            except Exception:
+                pass
+        # join worker threads briefly (they are daemon threads, so this is optional)
+        deadline = time.time() + timeout
+        for thread in self.threads:
+            remaining = max(0.0, deadline - time.time())
+            try:
+                thread.join(timeout=remaining)
+            except Exception:
+                pass
 
     def read(self, agent_id, startX, startY, width, height):
         bounds = self.agent_bounds.get(agent_id)
