@@ -160,6 +160,7 @@ class Synchronizer:
             with self.proposal_cv:
                 if not self.proposals:
                     self.proposal_cv.wait(timeout=2)
+                    continue
 
                 batch = self.proposals.copy()
                 self.proposals.clear()
