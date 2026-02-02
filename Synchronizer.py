@@ -161,13 +161,28 @@ class Synchronizer:
                 self.proposals.clear()
             if batch:
                 print(f"[run] batch size: {len(batch)}")
+                if self.verbose:
+                    sample = [ (p.region_id, p.rgb, p.canvas_version) for p in batch[:5] ]
+                    print(f"[run] sample proposals (first 5): {sample}")
             # Dict[Pos, Dict[rgb, int]]
             modified_pixels = dict()
 
             cur_age = self.canvas.age
 
             for p in batch:
-                weight: int = p.canvas_version
+                # use proposal confidence as a weight; canvas_version can be 0
+                # which would otherwise zero-out contributions and prevent updates
+                weight = getattr(p, "confidence", None)
+                if weight is None:
+                    # fallback to 1.0 for older proposals
+                    weight = 1.0
+                # ensure non-zero small floor
+                try:
+                    weight = float(weight)
+                except Exception:
+                    weight = 1.0
+                if weight <= 0.0:
+                    weight = 0.01
                 if p.region_id not in modified_pixels:
                     modified_pixels[p.region_id] = {}
                 modified_pixels[p.region_id][p.rgb] = (
@@ -190,11 +205,20 @@ class Synchronizer:
                 resultG = tempG / sumWeights
                 resultB = tempB / sumWeights
 
-                self.canvas.write(
-                    x,
-                    y,
-                    (int(resultR), int(resultG), int(resultB)),
-                )
+                # record previous value for debugging
+                try:
+                    prev = self.canvas.pixels[y][x]
+                except Exception:
+                    prev = None
+
+                new_col = (int(resultR), int(resultG), int(resultB))
+                self.canvas.write(x, y, new_col)
+
+                # log a few sample modifications when verbose
+                if self.verbose and (self.canvas.age % 10 == 0):
+                    print(f"[run] modify pos={(x,y)} prev={prev} -> new={new_col}")
+            if self.verbose:
+                print(f"[run] modified_pixels count: {len(modified_pixels)}")
             self.canvas.increment_age()
             frame_path = os.path.join(frames_dir, f"frame_{self.canvas.age:04d}.png")
             self.canvas.export(frame_path)

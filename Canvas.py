@@ -36,7 +36,6 @@ class Canvas:
 
             if row:
                 result.append(row)
-        self.age += 1
         return result
 
     def write(self, x, y, col: RGB):
